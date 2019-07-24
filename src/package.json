@@ -1,0 +1,12 @@
+{
+  "name": "@ehsawyer/underbelly-navigation",
+  "version": "1.0.2",
+  "description": "A small library to build a JSON representation of the Leviathan Underbelly",
+  "main": "build.js",
+  "repository": "https://github.com/ehsawyer/underbelly-navigation",
+  "author": "Ethan Sawyer",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "build" : "node build.js"
+  }
+}
