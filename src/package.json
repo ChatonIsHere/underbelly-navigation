@@ -7,6 +7,9 @@
   "author": "Ethan Sawyer",
   "license": "GPL-3.0-only",
   "scripts": {
-    "build" : "node build.js"
+    "test": "cd .. && jasmine"
+  },
+  "dependencies": {
+    "graph-data-structure": "^1.8.0"
   }
 }
