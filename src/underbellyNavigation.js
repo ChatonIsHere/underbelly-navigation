@@ -204,11 +204,18 @@ ub  .addEdge("embarkment", "water tube")
     .addEdge("pleasure gardens", "drainpipes", 1)
 // End Add Connections
 
-// console.log(ub.serialize())
-// console.log(ub.shortestPath("pipeline", "armory"))
-fs.writeFileSync('../underbelly.json', JSON.stringify(ub.serialize(), null, 2))
-
 ub.exists = function(node) {
     if (this.indegree(node) > 0 || this.outdegree(node) > 0) return true
     else return false
 }
+
+ub.JSON = function() {
+    return JSON.stringify(ub.serialize(), null, 2)
+}
+
+ub.export = function(path) {
+    if (fs.existsSync(path)) fs.writeFileSync(path, JSON.stringify(ub.serialize(), null, 2))
+    else throw new Error("Not a valid path")
+}
+
+module.exports = ub;
