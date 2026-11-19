@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Underbelly Navigation</title>
-<meta name="description" content="Find the quickest route between rooms in the Underbelly beneath the Leviathan raid.">
+<meta name="description" content="Find the quickest route between rooms in the Underbelly beneath the Leviathan raid, with stops and chests on the way.">
 <style>
   :root {
     --bg: #f6f4ef;
@@ -40,6 +40,7 @@
   main { max-width: 34rem; margin: 0 auto; padding: 24px 16px 40px; }
   h1 { font-size: 1.5rem; margin: 0 0 4px; }
   h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  h3 { font-size: 1rem; margin: 16px 0 4px; }
   p { margin: 0 0 16px; }
   .muted { color: var(--muted); }
   .card {
@@ -49,7 +50,7 @@
     padding: 16px;
     margin-bottom: 16px;
   }
-  .pick { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: end; }
+  .stop { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; margin-bottom: 10px; }
   label { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
   select, button {
     font: inherit;
@@ -60,8 +61,10 @@
     padding: 8px 10px;
   }
   select { width: 100%; }
-  button { cursor: pointer; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+  button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
+  button.remove { padding: 8px 12px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
   select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   ol { margin: 0; padding-left: 1.75rem; }
   li { padding: 3px 0; }
@@ -69,11 +72,14 @@
   .tag { font-size: 0.8rem; margin-left: 6px; }
   .tag.loot { color: var(--loot); }
   .tag.encounter { color: var(--encounter); }
+  .picked { font-size: 0.9rem; margin: 0 0 4px; }
   footer { font-size: 0.9rem; }
   a { color: var(--accent); }
   [x-cloak] { display: none !important; }
 </style>
 <script>
+  const ANY_LOOT = "*loot"
+
   // Dijkstra over the edge list in src/underbelly.json. Edges are one way and weigh 1 unless given.
   function quickestRoute(edges, from, to) {
     const next = {}
@@ -91,7 +97,57 @@
     }
     const route = [to]
     while (route[0] !== from) route.unshift(prev[route[0]])
-    return route
+    return { route, cost: dist[to] }
+  }
+
+  // Turns the stops into legs. Each run of "any loot room" stops becomes the chests you haven't
+  // listed yet that make that part of the trip cheapest, including the walk to the next real stop.
+  // Walking through a loot room on the way counts as getting its chest.
+  function planTrip(data, stops) {
+    const memo = {}
+    const find = (a, b) => (memo[a + ">" + b] ??= a === b ? { route: [a], cost: 0 } : quickestRoute(data.edges, a, b))
+    const lootOn = route => route.filter(r => data.lootRooms.includes(r))
+    const used = new Set(stops.filter(s => data.lootRooms.includes(s)))
+    const resolved = [stops[0]]
+    for (let i = 1; i < stops.length; i++) {
+      if (stops[i] !== ANY_LOOT) { resolved.push(stops[i]); continue }
+      let j = i
+      while (stops[j] === ANY_LOOT) j++
+      const count = j - i, after = stops[j] || null, start = resolved[resolved.length - 1]
+      let best = null
+      const search = (here, targets, got, total) => {
+        if (best && total >= best.total) return
+        if (got.size >= count) {
+          const tail = after ? find(here, after) : { cost: 0 }
+          if (tail && (!best || total + tail.cost < best.total)) best = { targets: [...targets], total: total + tail.cost }
+          return
+        }
+        for (const room of data.lootRooms) {
+          if (used.has(room) || got.has(room) || room === here) continue
+          const leg = find(here, room)
+          if (!leg) continue
+          const next = new Set(got)
+          for (const r of lootOn(leg.route)) if (!used.has(r)) next.add(r)
+          search(room, [...targets, room], next, total + leg.cost)
+        }
+      }
+      search(start, [], new Set(), 0)
+      if (!best) return { legs: [], stuck: { from: start, to: null } }
+      resolved.push(...best.targets)
+      i = j - 1
+    }
+    const legs = []
+    const seen = new Set(used)
+    for (let i = 1; i < resolved.length; i++) {
+      const from = resolved[i - 1], to = resolved[i]
+      if (from === to) continue
+      const found = find(from, to)
+      if (!found) return { legs, stuck: { from, to } }
+      const chests = lootOn(found.route.slice(1)).filter(r => !seen.has(r))
+      chests.forEach(r => seen.add(r))
+      legs.push({ from, to, chests: stops.includes(to) ? [] : chests, route: found.route })
+    }
+    return { legs, stuck: null }
   }
 
   function titleCase(room) {
@@ -102,8 +158,8 @@
     Alpine.data("underbelly", () => ({
       data: null,
       failed: false,
-      from: "",
-      to: "",
+      stops: [],
+      ANY_LOOT,
       async init() {
         try {
           const res = await fetch("src/underbelly.json")
@@ -114,8 +170,7 @@
           return
         }
         await this.$nextTick()
-        this.from = this.data.embarkment
-        this.to = "throne room"
+        this.stops = [this.data.embarkment, "throne room"]
       },
       get groups() {
         if (!this.data) return []
@@ -129,17 +184,36 @@
           { label: "Other rooms", rooms: [...others].sort() },
         ]
       },
-      get route() {
-        if (!this.data || !this.from || !this.to) return null
-        return quickestRoute(this.data.edges, this.from, this.to)
+      get trip() {
+        if (!this.data || this.stops.length < 2 || this.stops.some(s => !s)) return null
+        return planTrip(this.data, this.stops)
+      },
+      get steps() {
+        return this.trip ? this.trip.legs.reduce((n, leg) => n + leg.route.length - 1, 0) : 0
+      },
+      label(i) {
+        if (i === 0) return "Start"
+        if (i === this.stops.length - 1) return "Finish"
+        return "Then"
+      },
+      addStop() {
+        this.stops.splice(this.stops.length - 1, 0, ANY_LOOT)
+      },
+      removeStop(i) {
+        this.stops.splice(i, 1)
+        if (this.stops[0] === ANY_LOOT) this.stops[0] = this.data.embarkment
+      },
+      reverse() {
+        this.stops = [...this.stops].reverse()
+        if (this.stops[0] === ANY_LOOT) this.stops[0] = this.data.embarkment
       },
       kind(room) {
         if (this.data.encounters.includes(room)) return "encounter"
         if (this.data.lootRooms.includes(room)) return "loot"
         return ""
       },
-      swap() {
-        [this.from, this.to] = [this.to, this.from]
+      plural(n) {
+        return n + (n === 1 ? " step" : " steps")
       },
       name: titleCase,
     }))
@@ -150,57 +224,61 @@
 <body>
 <main x-data="underbelly">
   <h1>Underbelly Navigation</h1>
-  <p class="muted">The quickest way between rooms in the Underbelly beneath the Leviathan raid in Destiny 2.</p>
+  <p class="muted">The quickest way between rooms in the Underbelly beneath the Leviathan raid in Destiny 2. Add stops to plan a whole run, like going from one encounter to the next and grabbing a chest on the way.</p>
 
   <p x-show="failed" x-cloak>Could not load the map data. Try reloading the page.</p>
 
-  <div class="card pick" x-show="data" x-cloak>
-    <div>
-      <label for="from">From</label>
-      <select id="from" x-model="from">
-        <template x-for="group in groups" :key="group.label">
-          <optgroup :label="group.label">
-            <template x-for="room in group.rooms" :key="room">
-              <option :value="room" x-text="name(room)"></option>
+  <div class="card" x-show="data" x-cloak>
+    <template x-for="(stop, i) in stops" :key="i">
+      <div class="stop">
+        <div>
+          <label :for="'stop' + i" x-text="label(i)"></label>
+          <select :id="'stop' + i" x-model="stops[i]">
+            <option :value="ANY_LOOT" x-show="i > 0" :disabled="i === 0">Any loot room</option>
+            <template x-for="group in groups" :key="group.label">
+              <optgroup :label="group.label">
+                <template x-for="room in group.rooms" :key="room">
+                  <option :value="room" x-text="name(room)" :selected="room === stops[i]"></option>
+                </template>
+              </optgroup>
             </template>
-          </optgroup>
-        </template>
-      </select>
-    </div>
-    <div>
-      <label for="to">To</label>
-      <select id="to" x-model="to">
-        <template x-for="group in groups" :key="group.label">
-          <optgroup :label="group.label">
-            <template x-for="room in group.rooms" :key="room">
-              <option :value="room" x-text="name(room)"></option>
-            </template>
-          </optgroup>
-        </template>
-      </select>
-    </div>
-    <button type="button" @click="swap()" aria-label="Swap start and destination">Swap</button>
-  </div>
-
-  <section class="card" x-show="data" x-cloak aria-live="polite">
-    <template x-if="route && route.length > 1">
-      <div>
-        <h2 x-text="(route.length - 1) + (route.length === 2 ? ' step' : ' steps')"></h2>
-        <ol id="route">
-          <template x-for="room in route" :key="room">
-            <li>
-              <span x-text="name(room)"></span><span class="tag" :class="kind(room)" x-show="kind(room)" x-text="kind(room) === 'loot' ? 'loot room' : 'encounter'"></span>
-            </li>
-          </template>
-        </ol>
+          </select>
+        </div>
+        <button type="button" class="remove" x-show="stops.length > 2" @click="removeStop(i)" :aria-label="'Remove stop ' + (i + 1)">&times;</button>
       </div>
     </template>
-    <p x-show="route && route.length === 1">You are already there.</p>
-    <p x-show="data && from && to && !route">There is no way from <span x-text="name(from)"></span> to <span x-text="name(to)"></span>.<span x-show="from === 'throne room'"> Once you go into the Throne Room you do not come back out.</span></p>
+    <div class="actions">
+      <button type="button" @click="addStop()">Add a stop</button>
+      <button type="button" @click="reverse()">Reverse</button>
+    </div>
+  </div>
+
+  <section class="card" x-show="trip" x-cloak aria-live="polite">
+    <template x-if="trip">
+      <div>
+        <h2 x-show="trip.legs.length" x-text="plural(steps)"></h2>
+        <p x-show="!trip.legs.length && !trip.stuck">You are already there.</p>
+        <template x-for="(leg, n) in trip.legs" :key="n">
+          <div>
+            <h3 x-show="trip.legs.length > 1"><span x-text="name(leg.from)"></span> to <span x-text="name(leg.to)"></span> <span class="muted" x-text="'(' + plural(leg.route.length - 1) + ')'"></span></h3>
+            <p class="picked muted" x-show="leg.chests.length">Chests on the way: <span x-text="leg.chests.map(name).join(' and ')"></span>.</p>
+            <ol>
+              <template x-for="(room, r) in leg.route" :key="r">
+                <li>
+                  <span x-text="name(room)"></span><span class="tag" :class="kind(room)" x-show="kind(room)" x-text="kind(room) === 'loot' ? 'loot room' : 'encounter'"></span>
+                </li>
+              </template>
+            </ol>
+          </div>
+        </template>
+        <p x-show="trip.stuck" x-cloak>There is no way from <span x-text="trip.stuck && name(trip.stuck.from)"></span> to <span x-text="trip.stuck && (trip.stuck.to ? name(trip.stuck.to) : 'a loot room you have not been to yet')"></span>.<span x-show="trip.stuck && trip.stuck.from === 'throne room'"> Once you go into the Throne Room you do not come back out.</span></p>
+      </div>
+    </template>
   </section>
 
   <footer class="muted">
-    <p>Going through an encounter or back out to Embarkment counts as slow, so routes avoid them where they can. Made by Chaton in 2019. <a href="https://github.com/ChatonIsHere/underbelly-navigation">Source on GitHub</a>.</p>
+    <p>Going through an encounter or back out to Embarkment counts as slow, so routes avoid them where they can. Rooms that aren't loot rooms or encounters aren't named on the <a href="https://i.imgur.com/UVt3gMR.jpg">community map</a> by u/addesso, updated by u/ScoobyDeezy.</p>
+    <p>Made by Chaton in 2019. <a href="https://github.com/ChatonIsHere/underbelly-navigation">Source on GitHub</a>.</p>
   </footer>
 </main>
 </body>
