@@ -2,7 +2,7 @@
   "name": "underbelly-navigation",
   "version": "1.0.2",
   "description": "A small library to build a JSON representation of the Leviathan Underbelly",
-  "main": "build.js",
+  "main": "underbellyNavigation.js",
   "repository": "https://github.com/ChatonIsHere/underbelly-navigation",
   "author": "Chaton",
   "license": "GPL-3.0-only",
@@ -11,5 +11,8 @@
   },
   "dependencies": {
     "graph-data-structure": "^1.8.0"
+  },
+  "devDependencies": {
+    "jasmine": "^7.0.0"
   }
 }
