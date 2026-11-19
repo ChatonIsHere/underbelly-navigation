@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Underbelly Navigation</title>
+<meta name="description" content="Find the quickest route between rooms in the Underbelly beneath the Leviathan raid.">
+<style>
+  :root {
+    --bg: #f6f4ef;
+    --card: #ffffff;
+    --text: #1f1d1a;
+    --muted: #6b665d;
+    --line: #dcd7cc;
+    --accent: #8a5a00;
+    --loot: #8a5a00;
+    --encounter: #a3322b;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16151a;
+      --card: #201f26;
+      --text: #ebe8e1;
+      --muted: #a29d93;
+      --line: #393741;
+      --accent: #e0b04a;
+      --loot: #e0b04a;
+      --encounter: #ef7c72;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 34rem; margin: 0 auto; padding: 24px 16px 40px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  p { margin: 0 0 16px; }
+  .muted { color: var(--muted); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .pick { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: end; }
+  label { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+  select, button {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  select { width: 100%; }
+  button { cursor: pointer; grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+  button:hover { border-color: var(--accent); }
+  select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  ol { margin: 0; padding-left: 1.75rem; }
+  li { padding: 3px 0; }
+  li::marker { color: var(--muted); }
+  .tag { font-size: 0.8rem; margin-left: 6px; }
+  .tag.loot { color: var(--loot); }
+  .tag.encounter { color: var(--encounter); }
+  footer { font-size: 0.9rem; }
+  a { color: var(--accent); }
+  [x-cloak] { display: none !important; }
+</style>
+<script>
+  // Dijkstra over the edge list in src/underbelly.json. Edges are one way and weigh 1 unless given.
+  function quickestRoute(edges, from, to) {
+    const next = {}
+    for (const [a, b, w] of edges) (next[a] = next[a] || []).push([b, w === undefined ? 1 : w])
+    const dist = { [from]: 0 }, prev = {}, done = new Set()
+    while (true) {
+      let room = null
+      for (const r in dist) if (!done.has(r) && (room === null || dist[r] < dist[room])) room = r
+      if (room === null) return null
+      if (room === to) break
+      done.add(room)
+      for (const [b, w] of next[room] || []) {
+        if (dist[b] === undefined || dist[room] + w < dist[b]) { dist[b] = dist[room] + w; prev[b] = room }
+      }
+    }
+    const route = [to]
+    while (route[0] !== from) route.unshift(prev[route[0]])
+    return route
+  }
+
+  function titleCase(room) {
+    return room.replace(/\b\w/g, c => c.toUpperCase())
+  }
+
+  document.addEventListener("alpine:init", () => {
+    Alpine.data("underbelly", () => ({
+      data: null,
+      failed: false,
+      from: "",
+      to: "",
+      async init() {
+        try {
+          const res = await fetch("src/underbelly.json")
+          if (!res.ok) throw new Error(res.status)
+          this.data = await res.json()
+        } catch (e) {
+          this.failed = true
+          return
+        }
+        await this.$nextTick()
+        this.from = this.data.embarkment
+        this.to = "throne room"
+      },
+      get groups() {
+        if (!this.data) return []
+        const d = this.data
+        const named = new Set([d.embarkment, ...d.lootRooms, ...d.encounters])
+        const others = new Set(d.edges.flatMap(e => [e[0], e[1]]).filter(r => !named.has(r)))
+        return [
+          { label: "Start", rooms: [d.embarkment] },
+          { label: "Encounters", rooms: d.encounters },
+          { label: "Loot rooms", rooms: [...d.lootRooms].sort() },
+          { label: "Other rooms", rooms: [...others].sort() },
+        ]
+      },
+      get route() {
+        if (!this.data || !this.from || !this.to) return null
+        return quickestRoute(this.data.edges, this.from, this.to)
+      },
+      kind(room) {
+        if (this.data.encounters.includes(room)) return "encounter"
+        if (this.data.lootRooms.includes(room)) return "loot"
+        return ""
+      },
+      swap() {
+        [this.from, this.to] = [this.to, this.from]
+      },
+      name: titleCase,
+    }))
+  })
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.5/dist/cdn.min.js" integrity="sha384-FYLKjwG3aohNhNZoVG8sY/5ntunm+MqylL90Q+rT3OM7AwV9/BKFjk/RjoIpIgsI" crossorigin="anonymous"></script>
+</head>
+<body>
+<main x-data="underbelly">
+  <h1>Underbelly Navigation</h1>
+  <p class="muted">The quickest way between rooms in the Underbelly beneath the Leviathan raid in Destiny 2.</p>
+
+  <p x-show="failed" x-cloak>Could not load the map data. Try reloading the page.</p>
+
+  <div class="card pick" x-show="data" x-cloak>
+    <div>
+      <label for="from">From</label>
+      <select id="from" x-model="from">
+        <template x-for="group in groups" :key="group.label">
+          <optgroup :label="group.label">
+            <template x-for="room in group.rooms" :key="room">
+              <option :value="room" x-text="name(room)"></option>
+            </template>
+          </optgroup>
+        </template>
+      </select>
+    </div>
+    <div>
+      <label for="to">To</label>
+      <select id="to" x-model="to">
+        <template x-for="group in groups" :key="group.label">
+          <optgroup :label="group.label">
+            <template x-for="room in group.rooms" :key="room">
+              <option :value="room" x-text="name(room)"></option>
+            </template>
+          </optgroup>
+        </template>
+      </select>
+    </div>
+    <button type="button" @click="swap()" aria-label="Swap start and destination">Swap</button>
+  </div>
+
+  <section class="card" x-show="data" x-cloak aria-live="polite">
+    <template x-if="route && route.length > 1">
+      <div>
+        <h2 x-text="(route.length - 1) + (route.length === 2 ? ' step' : ' steps')"></h2>
+        <ol id="route">
+          <template x-for="room in route" :key="room">
+            <li>
+              <span x-text="name(room)"></span><span class="tag" :class="kind(room)" x-show="kind(room)" x-text="kind(room) === 'loot' ? 'loot room' : 'encounter'"></span>
+            </li>
+          </template>
+        </ol>
+      </div>
+    </template>
+    <p x-show="route && route.length === 1">You are already there.</p>
+    <p x-show="data && from && to && !route">There is no way from <span x-text="name(from)"></span> to <span x-text="name(to)"></span>.<span x-show="from === 'throne room'"> Once you go into the Throne Room you do not come back out.</span></p>
+  </section>
+
+  <footer class="muted">
+    <p>Going through an encounter or back out to Embarkment counts as slow, so routes avoid them where they can. Made by Chaton in 2019. <a href="https://github.com/ChatonIsHere/underbelly-navigation">Source on GitHub</a>.</p>
+  </footer>
+</main>
+</body>
+</html>
