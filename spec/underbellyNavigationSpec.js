@@ -80,13 +80,33 @@ describe("Underbelly", function() {
         expect(() => underbelly.shortestPath("throne room", "embarkment")).toThrowError("No path found")
     })
 
-    it("uses the right weights for exits and encounters", function() {
-        for (const [from, to, weight] of data.edges) {
-            const w = weight === undefined ? 1 : weight
-            expect([0, 1, 20, 100]).withContext(from + " to " + to).toContain(w)
-            if (to === "embarkment") expect(w).withContext(from).toBe(20)
-            if (encounters.includes(to)) expect(w).withContext(from + " to " + to).toBe(100)
-            if (encounters.includes(from)) expect(w).withContext(from + " to " + to).toBe(1)
+    it("weighs edges in seconds, defaulting to the average measured time", function() {
+        const measured = data.edges.filter(edge => edge[2] > 0).map(edge => edge[2])
+        const average = measured.reduce((a, b) => a + b, 0) / measured.length
+        expect(underbelly.defaultSeconds).toBeCloseTo(average, 6)
+        for (const [from, to, seconds] of data.edges) {
+            if (seconds === undefined) continue
+            expect(seconds).withContext(from + " to " + to).toBeGreaterThanOrEqual(0)
+            expect(seconds).withContext(from + " to " + to).toBeLessThan(120)
+        }
+    })
+
+    it("adds the encounter penalty only when going into an encounter", function() {
+        const json = JSON.parse(underbelly.JSON())
+        for (const link of json.links) {
+            const edge = data.edges.find(e => e[0] === link.source && e[1] === link.target)
+            const seconds = edge[2] === undefined ? underbelly.defaultSeconds : edge[2]
+            const penalty = encounters.includes(link.target) ? data.encounterPenalty : 0
+            expect(link.weight).withContext(link.source + " to " + link.target).toBeCloseTo(seconds + penalty, 6)
+        }
+    })
+
+    it("matches the measured video segments", function() {
+        for (const source of data.sources) {
+            for (const segment of source.segments) {
+                const [from, to] = segment.rooms
+                expect(underbelly.seconds(route(from, to))).withContext(from + " to " + to).toBe(segment.seconds)
+            }
         }
     })
 
@@ -128,7 +148,11 @@ describe("Underbelly", function() {
         it("reaches the Throne Room through the throne hallway", function() {
             const throne = underbelly.shortestPath("embarkment", "throne room")
             expect(throne.slice(-3)).toEqual(["hallway pipes", "throne hallway", "throne room"])
-            expect(throne.weight).toBe(110)
+            expect(throne.weight - underbelly.seconds(throne)).toBeCloseTo(data.encounterPenalty, 6)
+        })
+
+        it("takes the measured 170 seconds from Royal Pools to the Gauntlet", function() {
+            expect(underbelly.seconds(route("royal pools", "gauntlet"))).toBe(170)
         })
 
         it("avoids walking through encounters on the way somewhere else", function() {
@@ -142,7 +166,7 @@ describe("Underbelly", function() {
             const json = JSON.parse(underbelly.JSON())
             expect(json.nodes.length).toBe(underbelly.nodes().length)
             expect(json.links.length).toBe(data.edges.length)
-            expect(json.links).toContain({ source: "water tube", target: "embarkment", weight: 20 })
+            expect(json.links).toContain({ source: "water tube", target: "embarkment", weight: underbelly.defaultSeconds })
         })
 
         it("writes the JSON to an existing file", function() {

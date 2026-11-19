@@ -80,10 +80,21 @@
 <script>
   const ANY_LOOT = "*loot"
 
-  // Dijkstra over the edge list in src/underbelly.json. Edges are one way and weigh 1 unless given.
-  function quickestRoute(edges, from, to) {
-    const next = {}
-    for (const [a, b, w] of edges) (next[a] = next[a] || []).push([b, w === undefined ? 1 : w])
+  // Edges are one way and weighted in seconds. A third value is a measured time (0 for links
+  // that take no time); the rest use the average of the measured ones. Going into an encounter
+  // also costs encounterPenalty so routes only go through one when they have to.
+  function weigh(data) {
+    const timed = data.edges.filter(e => e[2] > 0)
+    const average = timed.reduce((n, e) => n + e[2], 0) / timed.length
+    const next = {}, walk = {}
+    for (const [a, b, s = average] of data.edges) {
+      walk[a + ">" + b] = s
+      ;(next[a] = next[a] || []).push([b, s + (data.encounters.includes(b) ? data.encounterPenalty : 0)])
+    }
+    return { next, walk, average }
+  }
+
+  function quickestRoute(map, from, to) {
     const dist = { [from]: 0 }, prev = {}, done = new Set()
     while (true) {
       let room = null
@@ -91,13 +102,15 @@
       if (room === null) return null
       if (room === to) break
       done.add(room)
-      for (const [b, w] of next[room] || []) {
+      for (const [b, w] of map.next[room] || []) {
         if (dist[b] === undefined || dist[room] + w < dist[b]) { dist[b] = dist[room] + w; prev[b] = room }
       }
     }
     const route = [to]
     while (route[0] !== from) route.unshift(prev[route[0]])
-    return { route, cost: dist[to] }
+    let seconds = 0
+    for (let i = 1; i < route.length; i++) seconds += map.walk[route[i - 1] + ">" + route[i]]
+    return { route, cost: dist[to], seconds }
   }
 
   // Turns the stops into legs. Each run of "any loot room" stops becomes the chests you haven't
@@ -105,7 +118,8 @@
   // Walking through a loot room on the way counts as getting its chest.
   function planTrip(data, stops) {
     const memo = {}
-    const find = (a, b) => (memo[a + ">" + b] ??= a === b ? { route: [a], cost: 0 } : quickestRoute(data.edges, a, b))
+    const map = weigh(data)
+    const find = (a, b) => (memo[a + ">" + b] ??= a === b ? { route: [a], cost: 0, seconds: 0 } : quickestRoute(map, a, b))
     const lootOn = route => route.filter(r => data.lootRooms.includes(r))
     const used = new Set(stops.filter(s => data.lootRooms.includes(s)))
     const resolved = [stops[0]]
@@ -145,9 +159,16 @@
       if (!found) return { legs, stuck: { from, to } }
       const chests = lootOn(found.route.slice(1)).filter(r => !seen.has(r))
       chests.forEach(r => seen.add(r))
-      legs.push({ from, to, chests: stops.includes(to) ? [] : chests, route: found.route })
+      legs.push({ from, to, chests: stops.includes(to) ? [] : chests, route: found.route, seconds: found.seconds })
     }
     return { legs, stuck: null }
+  }
+
+  // Rounded to 5 seconds, since most of the times are estimates.
+  function duration(seconds) {
+    const s = Math.max(5, Math.round(seconds / 5) * 5)
+    if (s < 60) return "about " + s + " s"
+    return "about " + Math.floor(s / 60) + " min" + (s % 60 ? " " + (s % 60) + " s" : "")
   }
 
   function titleCase(room) {
@@ -191,6 +212,12 @@
       get steps() {
         return this.trip ? this.trip.legs.reduce((n, leg) => n + leg.route.length - 1, 0) : 0
       },
+      get seconds() {
+        return this.trip ? this.trip.legs.reduce((n, leg) => n + leg.seconds, 0) : 0
+      },
+      get average() {
+        return this.data ? Math.round(weigh(this.data).average) : 0
+      },
       label(i) {
         if (i === 0) return "Start"
         if (i === this.stops.length - 1) return "Finish"
@@ -216,6 +243,7 @@
         return n + (n === 1 ? " step" : " steps")
       },
       name: titleCase,
+      duration,
     }))
   })
 </script>
@@ -256,11 +284,11 @@
   <section class="card" x-show="trip" x-cloak aria-live="polite">
     <template x-if="trip">
       <div>
-        <h2 x-show="trip.legs.length" x-text="plural(steps)"></h2>
+        <h2 x-show="trip.legs.length"><span x-text="duration(seconds)"></span> <span class="muted" x-text="'(' + plural(steps) + ')'"></span></h2>
         <p x-show="!trip.legs.length && !trip.stuck">You are already there.</p>
         <template x-for="(leg, n) in trip.legs" :key="n">
           <div>
-            <h3 x-show="trip.legs.length > 1"><span x-text="name(leg.from)"></span> to <span x-text="name(leg.to)"></span> <span class="muted" x-text="'(' + plural(leg.route.length - 1) + ')'"></span></h3>
+            <h3 x-show="trip.legs.length > 1"><span x-text="name(leg.from)"></span> to <span x-text="name(leg.to)"></span> <span class="muted" x-text="'(' + duration(leg.seconds) + ', ' + plural(leg.route.length - 1) + ')'"></span></h3>
             <p class="picked muted" x-show="leg.chests.length">Chests on the way: <span x-text="leg.chests.map(name).join(' and ')"></span>.</p>
             <ol>
               <template x-for="(room, r) in leg.route" :key="r">
@@ -277,7 +305,7 @@
   </section>
 
   <footer class="muted">
-    <p>Going through an encounter or back out to Embarkment counts as slow, so routes avoid them where they can. Rooms that aren't loot rooms or encounters aren't named on the <a href="https://i.imgur.com/UVt3gMR.jpg">community map</a> by u/addesso, updated by u/ScoobyDeezy.</p>
+    <p>Times are rough. The walk from Royal Pools through the Aqueduct, Transfer and Armory to the Gauntlet is timed from <a href="https://www.youtube.com/watch?v=HtjRf78wy2A">Phil Nelson's 2018 run</a>, and every other link uses the average of those, <span x-text="average"></span> seconds. Routes only go through an encounter when there's no other way. Rooms that aren't loot rooms or encounters aren't named on the <a href="https://i.imgur.com/UVt3gMR.jpg">community map</a> by u/addesso, updated by u/ScoobyDeezy.</p>
     <p>Made by Chaton in 2019. <a href="https://github.com/ChatonIsHere/underbelly-navigation">Source on GitHub</a>.</p>
   </footer>
 </main>
